@@ -1,0 +1,49 @@
+# Xcode
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/
+Packages/
+.swiftpm/xcode/package.xcworkspace/
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+
+# Xcode Workspace
+xcshareddata/WorkspaceSettings.xcsettings
+
+# User Interface State
+*.xcuserstate
+
+# Other
+*.moved-aside
+*.xcuserdatad
+*.swp
+*.swm
+*.swo
+*.tmp
+*.DS_Store
+
+# Images, datasets, and large files (uncomment if needed)
+images-basketball/
+yolov8n.pt 
