@@ -9,23 +9,25 @@ Kobe App uses your device's camera to track your basketball shooting form in rea
 ## Features
 
 ### ✅ Currently Working
-- **Real-time pose estimation** - Tracks body skeleton and joint positions using Vision framework
-- **Basketball and rim detection** - Uses CoreML and Roboflow API for object detection  
-- **Shot detection** - Analyzes ball trajectory and rim interaction to detect successful shots
+- **Real-time pose estimation** - Tracks body skeleton and joint positions using Vision framework (working well)
 - **Visual overlays** - Real-time skeleton, bounding boxes, and trajectory visualization
 - **Shooting form analysis** - Calculates joint angles (elbow, knee) and provides audio feedback
 - **User-defined hoop area** - Manual hoop area definition for custom environments
 - **Front/back camera support** - Toggle between camera orientations
 
+### ⚠️ Partially Working (Needs Improvement)
+- **Basketball detection** - Uses CoreML and Roboflow API but accuracy is poor, inconsistent tracking
+- **Basic shot counting** - Simple trajectory visualization but no reliable shot detection logic
+
 ### 🔧 Recently Implemented (This Commit)
 - **Advanced pose analysis** with joint angle calculations and feedback
-- **Enhanced shot detection logic** using trajectory analysis and hoop area detection
-- **Audio feedback system** for shooting form correction
+- **Audio feedback system** for shooting form correction  
 - **Improved UI overlays** with confidence-based joint coloring and labels
-- **Ball trajectory tracking** with visual path rendering
+- **Ball trajectory visualization** with basic path rendering (detection still needs improvement)
 - **CocoaPods integration** for Roboflow framework
 - **CoreML model integration** (best.mlpackage) for local basketball detection
 - **Comprehensive pose overlay system** with 17+ joint tracking
+- **Enhanced project structure** with comprehensive documentation
 
 ## Technical Architecture
 
@@ -69,7 +71,9 @@ open kobe-app.xcworkspace
 - Audio feedback for shooting form
 
 ### In Progress 🔧
-- **Shot accuracy analysis** - Need trajectory-based make/miss detection
+- **🎯 PRIORITY: Complete shot detection pipeline** - Need reliable Human → Ball → Shot → Make/Miss detection (see GitHub issue)
+- **Ball detection improvements** - Current detection is inconsistent with poor accuracy, needs temporal filtering and validation
+- **Shot state machine** - Implement proper shot attempt detection and trajectory analysis
 - **Form scoring system** - Quantitative shooting form ratings
 - **Session statistics** - Historical tracking and analytics
 
@@ -94,12 +98,20 @@ open kobe-app.xcworkspace
 - **Coordinate Systems**: Vision framework uses normalized coordinates (0-1)
 - **Memory Management**: Trajectory history with configurable size limits
 
-## Known Issues
+## Critical Issues & Next Steps
 
+### 🔥 High Priority
+- **Ball detection accuracy is poor** - Inconsistent tracking, false positives/negatives, temporal jumps
+- **Shot detection not implemented** - No reliable way to detect shot attempts, releases, or makes/misses
+- **Ball-human correlation missing** - Not tracking when ball leaves player's hands
+
+> **📋 See GitHub Issue**: "Implement robust shot detection pipeline: Human → Ball → Shot → Make/Miss" for detailed implementation plan
+
+### 🔧 Technical Debt  
 - API key should be externalized to environment variables
-- Shot detection logic needs refinement for edge cases
 - Camera orientation changes require app restart
 - Roboflow API calls may experience latency
+- Need comprehensive error handling for ML pipeline failures
 
 ## Contributing
 
