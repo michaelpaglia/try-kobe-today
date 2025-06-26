@@ -277,6 +277,8 @@ struct CameraView: UIViewControllerRepresentable {
     @Binding var userDefinedHoopArea: CGRect?
     @Binding var shotDetected: Bool
     @Binding var personLocation: CGRect?
+    @Binding var currentShotPhase: String
+    @Binding var shootingHand: String
 
     func makeUIViewController(context: Context) -> CameraViewController {
         let controller = CameraViewController()
@@ -307,6 +309,12 @@ struct CameraView: UIViewControllerRepresentable {
                 self.shotDetected = detected
             }
         }
+        controller.onShotPhaseUpdate = { phase, hand in
+            DispatchQueue.main.async {
+                self.currentShotPhase = phase
+                self.shootingHand = hand
+            }
+        }
         return controller
     }
 
@@ -334,6 +342,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     var onBasketballDetectionsUpdate: (([Detection]) -> Void)?
     var onPersonLocationUpdate: ((CGRect?) -> Void)?
     var onShotDetected: ((Bool) -> Void)?
+    var onShotPhaseUpdate: ((String, String) -> Void)?  // (phase, shootingHand)
     
     // Camera settings
     var useFrontCamera: Bool = false
@@ -357,6 +366,13 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     private let maxBallHistory = 5
     private var ballVelocity: CGVector = .zero
     private var lastBallTime: TimeInterval = 0
+    
+    // Enhanced ball detection manager
+    private let ballDetectionManager = BallDetectionManager()
+    
+    // Advanced shot detection manager
+    private let shotDetectionManager = ShotDetectionManager()
+    private var currentShotInProgress: Bool = false
     
     // Performance optimization
     private let processingQueue = DispatchQueue(label: "com.kobe.processing", qos: .userInteractive)
@@ -498,8 +514,11 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
 
     private func processFrame(_ pixelBuffer: CVPixelBuffer) {
         frameCounter += 1
+        // Process every 5th frame to reduce crashes and improve stability
         if frameCounter % 5 != 0 { return }
-        print("processFrame called (frame: \(frameCounter))")
+        if frameCounter % 50 == 0 {  // Reduced logging
+            print("processFrame called (frame: \(frameCounter))")
+        }
         
         // Check for camera movement and clear detections if significant motion detected
         if let currentColor = calculateAverageColor(pixelBuffer) {
@@ -523,111 +542,63 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         }
         // Segment image into 640x640 squares and process each (throttled)
         guard !isProcessingSegments else {
-            print("Still processing previous segments, skipping frame")
-            return
+            return  // Skip frame if still processing
         }
         
         isProcessingSegments = true
         processImageSegments(image, model: model) { [weak self] allDetections in
             guard let self = self else { return }
-            print("Total detections from all segments: \(allDetections.count)")
+            if allDetections.count > 0 && self.frameCounter % 50 == 0 {
+                print("Total detections from all segments: \(allDetections.count)")
+            }
             self.updateDetections(allDetections)
             self.isProcessingSegments = false
         }
     }
 
-    // Validate basketball size relative to person
-    private func isValidBallSize(_ ballBox: CGRect, personBoundingBox: CGRect?) -> Bool {
-        guard let personBox = personBoundingBox else {
-            // Without person reference, just check basic size constraints
-            let area = ballBox.width * ballBox.height
-            return area >= 0.005 && area <= 0.1 // Between 0.5% and 10% of screen
-        }
-        
-        let ballArea = ballBox.width * ballBox.height
-        let personArea = personBox.width * personBox.height
-        
-        // Basketball should be between 1/50 and 1/8 of person area
-        let minBallRatio: CGFloat = 1.0 / 50.0
-        let maxBallRatio: CGFloat = 1.0 / 8.0
-        let ballRatio = ballArea / personArea
-        
-        // Check aspect ratio - basketball should be roughly circular
-        let aspectRatio = ballBox.width / ballBox.height
-        let isCircular = aspectRatio >= 0.6 && aspectRatio <= 1.4
-        
-        // Check minimum absolute size to avoid tiny false positives
-        let minAbsoluteArea: CGFloat = 0.002 // 0.2% of screen
-        
-        let isValidSize = ballRatio >= minBallRatio && ballRatio <= maxBallRatio
-        let hasMinSize = ballArea >= minAbsoluteArea
-        
-        if !isValidSize || !isCircular || !hasMinSize {
-            print("Ball validation failed - ratio: \(ballRatio), circular: \(isCircular), minSize: \(hasMinSize)")
-        }
-        
-        return isValidSize && isCircular && hasMinSize
-    }
+    // Note: Ball validation and smoothing logic moved to BallDetectionManager
     
-    // Smooth ball detection using temporal tracking
-    private func smoothBallDetection(_ ballDetection: Detection) -> Detection {
-        let currentTime = CACurrentMediaTime()
+    // Validate rim detections to avoid false positives
+    private func isValidRimDetection(_ rimDetection: Detection, personBoundingBox: CGRect?) -> Bool {
+        let rimBox = rimDetection.boundingBox
         
-        // Add to history
-        ballHistory.append(ballDetection)
-        if ballHistory.count > maxBallHistory {
-            ballHistory.removeFirst()
-        }
-        
-        // Calculate velocity if we have previous detection
-        if let lastBall = ballHistory.dropLast().last, lastBallTime > 0 {
-            let deltaTime = currentTime - lastBallTime
-            if deltaTime > 0 {
-                let deltaX = ballDetection.boundingBox.midX - lastBall.boundingBox.midX
-                let deltaY = ballDetection.boundingBox.midY - lastBall.boundingBox.midY
-                ballVelocity = CGVector(dx: deltaX / deltaTime, dy: deltaY / deltaTime)
+        // 1. Rim should not be entirely inside person bounding box
+        if let personBox = personBoundingBox {
+            if personBox.contains(rimBox) {
+                print("Rim rejected: entirely inside person")
+                return false
+            }
+            
+            // 2. Rim should not have massive overlap with person (>50%)
+            let intersection = personBox.intersection(rimBox)
+            let rimArea = rimBox.width * rimBox.height
+            if intersection.width * intersection.height > rimArea * 0.5 {
+                print("Rim rejected: too much overlap with person (\(intersection.width * intersection.height / rimArea * 100)%)")
+                return false
             }
         }
         
-        lastBallTime = currentTime
-        
-        // If we have enough history, smooth the position
-        guard ballHistory.count >= 3 else { return ballDetection }
-        
-        // Weighted average of recent detections (more recent = higher weight)
-        var weightedX: CGFloat = 0
-        var weightedY: CGFloat = 0
-        var weightedWidth: CGFloat = 0
-        var weightedHeight: CGFloat = 0
-        var totalWeight: CGFloat = 0
-        
-        for (index, detection) in ballHistory.enumerated() {
-            let weight = CGFloat(index + 1) // Linear weight increase
-            weightedX += detection.boundingBox.midX * weight
-            weightedY += detection.boundingBox.midY * weight
-            weightedWidth += detection.boundingBox.width * weight
-            weightedHeight += detection.boundingBox.height * weight
-            totalWeight += weight
+        // 3. Rim should be reasonable size (not tiny or huge)
+        let rimArea = rimBox.width * rimBox.height
+        if rimArea < 0.005 || rimArea > 0.3 {  // 0.5% to 30% of screen
+            print("Rim rejected: unreasonable size (\(rimArea))")
+            return false
         }
         
-        let smoothedCenter = CGPoint(x: weightedX / totalWeight, y: weightedY / totalWeight)
-        let smoothedSize = CGSize(width: weightedWidth / totalWeight, height: weightedHeight / totalWeight)
+        // 4. Rim should be reasonably wide (basketball hoops are wider than tall)
+        let aspectRatio = rimBox.width / rimBox.height
+        if aspectRatio < 0.3 {  // Too tall and narrow to be a rim
+            print("Rim rejected: too narrow (aspect ratio: \(aspectRatio))")
+            return false
+        }
         
-        let smoothedBox = CGRect(
-            x: smoothedCenter.x - smoothedSize.width / 2,
-            y: smoothedCenter.y - smoothedSize.height / 2,
-            width: smoothedSize.width,
-            height: smoothedSize.height
-        )
+        // 5. Rim should typically be in upper portion of screen (basketball hoops are mounted high)
+        if rimBox.midY > 0.8 {  // Bottom 20% of screen unlikely for rim
+            print("Rim rejected: too low on screen (y: \(rimBox.midY))")
+            return false
+        }
         
-        return Detection(
-            boundingBox: smoothedBox,
-            confidence: ballDetection.confidence, // Keep original confidence
-            label: ballDetection.label,
-            isPerson: false,
-            keypoints: nil,
-            trajectory: nil
-        )
+        return true
     }
     
     // Check if ball is near person's hands for shot detection
@@ -662,48 +633,69 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         print("updateDetections called with: \(newDetections)")
         var updated = false
         var personDetection: Detection?
-        var validBallDetections: [Detection] = []
         
-        // First pass: collect person detection and filter ball detections by size
+        // First pass: collect person detection
         for detection in newDetections {
             if detection.label == "person" {
                 personDetection = detection
                 onPersonLocationUpdate?(detection.boundingBox)
-            } else if detection.label == "basketball" {
-                // Get person bounding box for size comparison
-                let personBoundingBox = personDetection?.boundingBox ?? createPersonBoundingBoxFromPose()
-                if isValidBallSize(detection.boundingBox, personBoundingBox: personBoundingBox) {
-                    validBallDetections.append(detection)
-                } else {
-                    print("Filtering out basketball with invalid size: \(detection.boundingBox)")
-                    continue
-                }
             }
         }
         
-        // Select best ball detection from valid ones and apply temporal smoothing
-        var ballDetection: Detection? = nil
-        if let bestBall = validBallDetections.max(by: { $0.confidence < $1.confidence }) {
-            ballDetection = smoothBallDetection(bestBall)
+        // Get person bounding box for reference (from Roboflow or pose data)
+        let personBoundingBox = personDetection?.boundingBox ?? createPersonBoundingBoxFromPose()
+        
+        // Use enhanced ball detection manager with pose data
+        let ballDetectionResult = ballDetectionManager.processBallDetections(
+            newDetections,
+            personBoundingBox: personBoundingBox,
+            posePoints: lastPosePoints,
+            useFrontCamera: useFrontCamera,
+            shotInProgress: currentShotInProgress
+        )
+        
+        // Convert ball detection result back to Detection format for compatibility
+        var ballDetection: Detection?
+        if let ballResult = ballDetectionResult {
+            ballDetection = Detection(
+                boundingBox: ballResult.boundingBox,
+                confidence: ballResult.confidence,
+                label: "basketball",
+                isPerson: false,
+                keypoints: nil,
+                trajectory: nil
+            )
             
             // Check if ball is near hands for enhanced shot detection
             if isNearHands(ballDetection!.boundingBox) {
                 print("Ball detected near hands - potential shot setup")
             }
+            
+            // Store velocity for physics validation
+            ballVelocity = ballResult.velocity
         }
         
-        // Process all detections (including smoothed ball detection)
+        // Process all detections (including validated ball detection)
         var detectionsToProcess = newDetections.filter { $0.label != "basketball" }
         if let validBall = ballDetection {
             detectionsToProcess.append(validBall)
         }
         
         for detection in detectionsToProcess {
-            // Lower threshold for basketball/rim vs general objects  
-            let threshold = (detection.label == "basketball" || detection.label.lowercased().contains("rim") || detection.label.lowercased().contains("hoop")) ? 0.1 : confidenceThreshold
+            // Higher threshold for basketball to avoid false positives  
+            let threshold = (detection.label == "basketball" || detection.label.lowercased().contains("rim") || detection.label.lowercased().contains("hoop")) ? 0.15 : confidenceThreshold
             guard detection.confidence >= threshold else { 
                 print("Filtering out \(detection.label) with confidence \(detection.confidence) (threshold: \(threshold))")
                 continue 
+            }
+            
+            // Filter out implausible rim detections (like rims inside people)
+            if detection.label.lowercased().contains("rim") || detection.label.lowercased().contains("hoop") {
+                guard isValidRimDetection(detection, personBoundingBox: personBoundingBox) else {
+                    print("🚫 RIM REJECTED: implausible location \(detection.boundingBox)")
+                    continue
+                }
+                print("✅ RIM ACCEPTED: \(detection.boundingBox)")
             }
             
             if let existingDetection = activeDetections[detection.label] {
@@ -717,16 +709,36 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             }
         }
         
-        // Check for shots if we have both ball and person detections
-        if let ball = ballDetection {
-            // Use person detection from Roboflow, or create one from pose data
-            let personBoundingBox = personDetection?.boundingBox ?? createPersonBoundingBoxFromPose()
-            detectShot(ballDetection: ball, personLocation: personBoundingBox)
+        // Use advanced shot detection system
+        let ballPosition = ballDetection.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) }
+        
+        if let shotResult = shotDetectionManager.processShotDetection(
+            ballPosition: ballPosition,
+            ballVelocity: ballVelocity,
+            posePoints: lastPosePoints,
+            useFrontCamera: useFrontCamera
+        ) {
+            // Update UI with current phase and shooting hand
+            let handString = shotResult.shootingHand == .left ? "LEFT" : 
+                           shotResult.shootingHand == .right ? "RIGHT" : "UNKNOWN"
+            onShotPhaseUpdate?(shotResult.phase.rawValue, handString)
             
-            // Update person location for UI
-            if personBoundingBox != nil {
-                onPersonLocationUpdate?(personBoundingBox)
+            // Track if shot is in progress (for ball tracking)
+            currentShotInProgress = (shotResult.phase == .release || shotResult.phase == .followThrough)
+            
+            // Only trigger shot detected callback for actual release
+            if shotResult.phase == .release || shotResult.phase == .followThrough {
+                onShotDetected?(true)
+                print("[ShotDetection] 🎯 SHOT DETECTED: \(shotResult.phase.rawValue) with \(shotResult.shootingHand) hand")
+            } else if shotResult.phase == .complete {
+                onShotDetected?(false)  // Reset after completion
+                currentShotInProgress = false  // Shot fully complete
             }
+        }
+        
+        // Update person location for UI
+        if personBoundingBox != nil {
+            onPersonLocationUpdate?(personBoundingBox)
         }
         
         // If we have updates, send them to the UI
@@ -736,7 +748,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             }
         }
         
-        // Update ball trajectory
+        // Update ball trajectory using enhanced trajectory points
         if let ball = ballDetection {
             let ballCenter = CGPoint(x: ball.boundingBox.midX, y: ball.boundingBox.midY)
             ballTrajectory.append(ballCenter)
@@ -746,41 +758,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         }
     }
 
-    private func detectShot(ballDetection: Detection, personLocation: CGRect?) {
-        guard let personLocation = personLocation else { return }
-        let ballLeftPerson = !ballDetection.boundingBox.intersects(personLocation)
-        // Find rim/hoop detection with flexible naming
-        let rimDetection = activeDetections.values.first { detection in
-            let label = detection.label.lowercased()
-            return label.contains("rim") || label.contains("hoop") || label.contains("basket")
-        }
-        
-        let ballCenter = CGPoint(x: ballDetection.boundingBox.midX, y: ballDetection.boundingBox.midY)
-        var shotInHoop = false
-        
-        // Check rim detection first
-        if let rimDetection = rimDetection, ballLeftPerson {
-            shotInHoop = rimDetection.boundingBox.contains(ballCenter)
-        }
-        // Fallback to user-defined hoop area
-        else if let userHoopArea = userDefinedHoopArea, ballLeftPerson {
-            shotInHoop = userHoopArea.contains(ballCenter)
-        }
-        
-        if shotInHoop {
-            ballInHoopFrames += 1
-            if ballInHoopFrames >= requiredFramesInHoop {
-                onShotDetected?(true)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.ballInHoopFrames = 0
-                    self.onShotDetected?(false)
-                }
-            }
-        } else {
-            ballInHoopFrames = 0
-        }
-        lastBallPosition = ballDetection.boundingBox
-    }
+    // Note: Old shot detection logic replaced with ShotDetectionManager
 
     func clearDetections() {
         activeDetections.removeAll()
@@ -793,6 +771,13 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         ballHistory.removeAll()
         ballVelocity = .zero
         lastBallTime = 0
+        
+        // Clear enhanced ball detection manager
+        ballDetectionManager.clearTrackingData()
+        
+        // Reset advanced shot detection
+        shotDetectionManager.resetShotDetection()
+        currentShotInProgress = false
         
         // Clear UI immediately
         DispatchQueue.main.async {
@@ -817,6 +802,13 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             ballInHoopFrames = 0
             currentShotState = .none
             frameCounter = 0
+            
+            // Clear enhanced ball detection manager
+            ballDetectionManager.clearTrackingData()
+            
+            // Reset advanced shot detection
+            shotDetectionManager.resetShotDetection()
+            currentShotInProgress = false
             
             // Clear UI immediately
             DispatchQueue.main.async {
@@ -1019,8 +1011,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         let cols = Int(ceil(imageSize.width / segmentSize))
         let rows = Int(ceil(imageSize.height / segmentSize))
         
-        print("Processing image \(imageSize.width)x\(imageSize.height) in \(cols)x\(rows) segments")
-        
         var allDetections: [Detection] = []
         let dispatchGroup = DispatchGroup()
         let detectionQueue = DispatchQueue(label: "detection-queue", attributes: .concurrent)
@@ -1049,16 +1039,16 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                             defer { dispatchGroup.leave() }
                             
                             if let error = error {
-                                print("Segment (\(row),\(col)) detection error: \(error)")
                                 return
                             }
                             
                             guard let predictions = predictions else {
-                                print("Segment (\(row),\(col)): No predictions")
                                 return
                             }
                             
-                            print("Segment (\(row),\(col)): \(predictions.count) predictions")
+                            if predictions.count > 0 && self.frameCounter % 100 == 0 {
+                                print("Segment (\(row),\(col)): \(predictions.count) predictions")
+                            }
                             
                             let segmentDetections = predictions.compactMap { pred -> Detection? in
                                 let values = pred.getValues()
@@ -1078,8 +1068,8 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                                     confidence = 0
                                 }
                                 
-                                // Skip low confidence detections
-                                guard confidence > 0.1 else { return nil }
+                                // Higher threshold to reduce false positives
+                                guard confidence > 0.15 else { return nil }
                                 
                                 // Convert coordinates from segment space back to full image space
                                 let fullImageX = (x / 640.0 * segmentRect.width + segmentRect.minX) / imageSize.width
@@ -1094,7 +1084,9 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                                     height: fullImageHeight
                                 )
                                 
-                                print("Segment (\(row),\(col)) detection: \(className) conf=\(confidence) bbox=\(bbox)")
+                                if self.frameCounter % 200 == 0 {
+                                    print("Segment (\(row),\(col)) detection: \(className) conf=\(confidence)")
+                                }
                                 
                                 return Detection(
                                     boundingBox: bbox,
@@ -1118,7 +1110,6 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         }
         
         dispatchGroup.notify(queue: .main) {
-            print("All segments processed. Total detections: \(allDetections.count)")
             completion(allDetections)
         }
     }

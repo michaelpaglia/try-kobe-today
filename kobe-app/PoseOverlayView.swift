@@ -13,6 +13,8 @@ struct PoseOverlayView: View {
     let ballTrajectory: [CGPoint]
     let ballBox: CGRect?
     let useFrontCamera: Bool
+    let currentShotPhase: String
+    let shootingHand: String
     // Add all detections for tap-to-detect
     var allDetections: [Detection] {
         hoopBoundingBoxes // You can expand this if you have more types
@@ -34,13 +36,52 @@ struct PoseOverlayView: View {
                 calculateAngles(in: geometry)
                 debugInfo(in: geometry)
                 segmentGrid(in: geometry)
-                // Draw convex shadow for basketballs
+                shotPhaseDisplay(in: geometry)
+                // Draw CLEARLY LABELED detection boxes
                 ForEach(hoopBoundingBoxes, id: \ .self) { detection in
                     if detection.label == "basketball" {
-                        Ellipse()
-                            .stroke(selectedDetection == detection ? Color.cyan : Color.blue, lineWidth: selectedDetection == detection ? 5 : 3)
-                            .frame(width: detection.boundingBox.width * geometry.size.width, height: detection.boundingBox.height * geometry.size.height)
-                            .position(x: (detection.boundingBox.minX + detection.boundingBox.width/2) * geometry.size.width, y: (detection.boundingBox.minY + detection.boundingBox.height/2) * geometry.size.height)
+                        // MINI BALL DETECTION - Smooth responsive circle with convex hull effect
+                        ZStack {
+                            // Outer glow effect
+                            Circle()
+                                .fill(
+                                    RadialGradient(
+                                        gradient: Gradient(colors: [Color.green.opacity(0.6), Color.green.opacity(0.1), Color.clear]),
+                                        center: .center,
+                                        startRadius: 5,
+                                        endRadius: 25
+                                    )
+                                )
+                                .frame(width: 50, height: 50)
+                            
+                            // Main ball circle
+                            Circle()
+                                .stroke(Color.green, lineWidth: 3)
+                                .background(Circle().fill(Color.green.opacity(0.3)))
+                                .frame(width: 30, height: 30)
+                            
+                            // Center dot
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                        }
+                        .position(x: (detection.boundingBox.minX + detection.boundingBox.width/2) * geometry.size.width, y: (detection.boundingBox.minY + detection.boundingBox.height/2) * geometry.size.height)
+                        .animation(.easeInOut(duration: 0.1), value: detection.boundingBox)
+                    } else if detection.label.lowercased().contains("rim") || detection.label.lowercased().contains("hoop") {
+                        // RIM/HOOP DETECTION - Bright orange rectangle
+                        ZStack {
+                            Rectangle()
+                                .stroke(Color.orange, lineWidth: 4)
+                                .background(Rectangle().fill(Color.orange.opacity(0.2)))
+                                .frame(width: detection.boundingBox.width * geometry.size.width, height: detection.boundingBox.height * geometry.size.height)
+                            
+                            Text("🎯 RIM/HOOP")
+                                .font(.caption.bold())
+                                .foregroundColor(.orange)
+                                .background(Color.black.opacity(0.7))
+                                .cornerRadius(4)
+                        }
+                        .position(x: (detection.boundingBox.minX + detection.boundingBox.width/2) * geometry.size.width, y: (detection.boundingBox.minY + detection.boundingBox.height/2) * geometry.size.height)
                     }
                 }
                 // Highlight selected detection with a thick border
@@ -453,6 +494,66 @@ struct PoseOverlayView: View {
                         y: CGFloat(row) * segmentHeight + 20
                     )
             }
+        }
+    }
+    
+    // Display current shot phase prominently
+    @ViewBuilder
+    private func shotPhaseDisplay(in geometry: GeometryProxy) -> some View {
+        VStack(spacing: 8) {
+            // Shot Phase Display
+            HStack {
+                Text("📊 PHASE:")
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+                
+                Text(currentShotPhase)
+                    .font(.title2.bold())
+                    .foregroundColor(getPhaseColor(currentShotPhase))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(getPhaseColor(currentShotPhase).opacity(0.2))
+                    .cornerRadius(8)
+            }
+            
+            // Shooting Hand Display
+            if shootingHand != "UNKNOWN" {
+                HStack {
+                    Text("✋ HAND:")
+                        .font(.caption.bold())
+                        .foregroundColor(.white)
+                    
+                    Text(shootingHand)
+                        .font(.headline.bold())
+                        .foregroundColor(shootingHand == "LEFT" ? .purple : .cyan)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background((shootingHand == "LEFT" ? Color.purple : Color.cyan).opacity(0.2))
+                        .cornerRadius(6)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.black.opacity(0.8))
+        .cornerRadius(12)
+        .position(x: geometry.size.width / 2, y: 80)
+    }
+    
+    // Get color for different shot phases
+    private func getPhaseColor(_ phase: String) -> Color {
+        switch phase {
+        case "Ready":
+            return .gray
+        case "Loading", "Preparation":
+            return .yellow
+        case "Release":
+            return .red
+        case "Follow", "followThrough":
+            return .orange
+        case "Complete":
+            return .green
+        default:
+            return .white
         }
     }
 } 

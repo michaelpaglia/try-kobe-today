@@ -27,6 +27,8 @@ struct BasketballTrainerView: View {
     @State private var dragEndPoint: CGPoint? = nil
     @State private var ballTrajectory: [CGPoint] = []
     @State private var ballBox: CGRect? = nil
+    @State private var currentShotPhase: String = "Ready"
+    @State private var shootingHand: String = "UNKNOWN"
     
     // Indices for right arm keypoints in Vision's output (approximate order)
     let rightWristIndex = 14
@@ -58,7 +60,9 @@ struct BasketballTrainerView: View {
                 hoopBoundingBoxes: $hoopBoundingBoxes,
                 userDefinedHoopArea: $userDefinedHoopArea,
                 shotDetected: $shotDetected,
-                personLocation: $personLocation
+                personLocation: $personLocation,
+                currentShotPhase: $currentShotPhase,
+                shootingHand: $shootingHand
             )
             .edgesIgnoringSafeArea(.all)
             
@@ -72,7 +76,9 @@ struct BasketballTrainerView: View {
                 userDefinedHoopArea: userDefinedHoopArea,
                 ballTrajectory: ballTrajectory,
                 ballBox: ballBox,
-                useFrontCamera: useFrontCamera
+                useFrontCamera: useFrontCamera,
+                currentShotPhase: currentShotPhase,
+                shootingHand: shootingHand
             )
             .allowsHitTesting(false)
             
