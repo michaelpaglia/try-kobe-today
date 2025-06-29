@@ -368,7 +368,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     private var lastBallTime: TimeInterval = 0
     
     // Enhanced ball detection manager
-    private let ballDetectionManager = BallDetectionManager()
+    // Removed: private let ballDetectionManager = BallDetectionManager() // No longer needed for pure motion detection
     
     // Advanced shot detection manager
     private let shotDetectionManager = ShotDetectionManager()
@@ -443,6 +443,10 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                 self.onPosePointsUpdate?(points, first)
             } else {
                 print("No pose detected")
+                // CRITICAL: Clear stale pose data when no pose detected
+                self.lastPosePoints.removeAll()
+                // Reset shot detection state when pose is lost
+                self.shotDetectionManager.handlePoseLost()
                 self.onPosePointsUpdate?([:], nil)
             }
         })
@@ -645,34 +649,15 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         // Get person bounding box for reference (from Roboflow or pose data)
         let personBoundingBox = personDetection?.boundingBox ?? createPersonBoundingBoxFromPose()
         
-        // Use enhanced ball detection manager with pose data
-        let ballDetectionResult = ballDetectionManager.processBallDetections(
-            newDetections,
-            personBoundingBox: personBoundingBox,
-            posePoints: lastPosePoints,
-            useFrontCamera: useFrontCamera,
-            shotInProgress: currentShotInProgress
-        )
+        // Note: Ball detection removed for pure motion-based shot detection
+        // We no longer process ball detections since shot detection is purely pose-based
         
-        // Convert ball detection result back to Detection format for compatibility
+        // Keep basic ball detection for UI display only (not used for shot detection)
         var ballDetection: Detection?
-        if let ballResult = ballDetectionResult {
-            ballDetection = Detection(
-                boundingBox: ballResult.boundingBox,
-                confidence: ballResult.confidence,
-                label: "basketball",
-                isPerson: false,
-                keypoints: nil,
-                trajectory: nil
-            )
-            
-            // Check if ball is near hands for enhanced shot detection
-            if isNearHands(ballDetection!.boundingBox) {
-                print("Ball detected near hands - potential shot setup")
-            }
-            
-            // Store velocity for physics validation
-            ballVelocity = ballResult.velocity
+        let basketballs = newDetections.filter { $0.label == "basketball" }
+        if let firstBasketball = basketballs.first {
+            ballDetection = firstBasketball
+            print("Ball detected for UI display only - not used for shot detection")
         }
         
         // Process all detections (including validated ball detection)
@@ -709,12 +694,9 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             }
         }
         
-        // Use advanced shot detection system
-        let ballPosition = ballDetection.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) }
-        
-        if let shotResult = shotDetectionManager.processShotDetection(
-            ballPosition: ballPosition,
-            ballVelocity: ballVelocity,
+        // Use pure motion-based shot detection system (ONLY with fresh pose data)
+        if !lastPosePoints.isEmpty,
+           let shotResult = shotDetectionManager.processShotDetection(
             posePoints: lastPosePoints,
             useFrontCamera: useFrontCamera
         ) {
@@ -723,14 +705,21 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
                            shotResult.shootingHand == .right ? "RIGHT" : "UNKNOWN"
             onShotPhaseUpdate?(shotResult.phase.rawValue, handString)
             
+            // Provide real-time audio feedback if available
+            if let motionQuality = shotResult.motionQuality,
+               !motionQuality.audioFeedback.isEmpty {
+                // Audio feedback will be printed in ShotDetectionManager
+                // TODO: Integrate with actual text-to-speech system
+            }
+            
             // Track if shot is in progress (for ball tracking)
-            currentShotInProgress = (shotResult.phase == .release || shotResult.phase == .followThrough)
+            currentShotInProgress = (shotResult.phase == ShotPhase.shotRelease || shotResult.phase == ShotPhase.followThrough)
             
             // Only trigger shot detected callback for actual release
-            if shotResult.phase == .release || shotResult.phase == .followThrough {
+            if shotResult.phase == ShotPhase.shotRelease || shotResult.phase == ShotPhase.followThrough {
                 onShotDetected?(true)
                 print("[ShotDetection] 🎯 SHOT DETECTED: \(shotResult.phase.rawValue) with \(shotResult.shootingHand) hand")
-            } else if shotResult.phase == .complete {
+            } else if shotResult.phase == ShotPhase.complete {
                 onShotDetected?(false)  // Reset after completion
                 currentShotInProgress = false  // Shot fully complete
             }
@@ -772,8 +761,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         ballVelocity = .zero
         lastBallTime = 0
         
-        // Clear enhanced ball detection manager
-        ballDetectionManager.clearTrackingData()
+        // Note: Ball detection manager removed for pure motion detection
         
         // Reset advanced shot detection
         shotDetectionManager.resetShotDetection()
@@ -803,8 +791,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             currentShotState = .none
             frameCounter = 0
             
-            // Clear enhanced ball detection manager
-            ballDetectionManager.clearTrackingData()
+            // Note: Ball detection manager removed for pure motion detection
             
             // Reset advanced shot detection
             shotDetectionManager.resetShotDetection()
